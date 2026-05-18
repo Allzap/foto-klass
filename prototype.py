@@ -423,6 +423,86 @@ def maybe_upscale(img: np.ndarray, mdl: Models, cfg: Config) -> tuple[np.ndarray
     return up, info
 
 
+def upscale_batch(imgs: list[np.ndarray], mdl: Models, cfg: Config) -> list[tuple[np.ndarray, dict]]:
+    """
+    Batched Nomos x4 upscaler.
+
+    Strategy:
+      1. Split inputs into 'needs_upscale' (long_side < skip_threshold) and 'skip'.
+      2. For 'needs_upscale': pad all to the max H/W in the group, run Nomos once,
+         then crop each output back to its true size (×4).
+      3. Skipped inputs pass through unchanged.
+
+    All inputs must be uint8 RGB ndarrays. Order of returned list matches input.
+
+    Padding wastes some GPU on smaller images in mixed-size batches. Callers
+    should pre-sort by size to minimise waste when possible.
+    """
+    results: list[Optional[tuple[np.ndarray, dict]]] = [None] * len(imgs)
+    needs_idx: list[int] = []
+    for i, img in enumerate(imgs):
+        H, W = img.shape[:2]
+        long_side = max(H, W)
+        info_skip = {"input_long_side": long_side, "applied": False, "factor": 1.0, "fallback": False}
+        if long_side >= cfg.upscale_skip_long_side_px:
+            results[i] = (img, info_skip)
+        elif long_side >= cfg.upscale_target_long_side_px:
+            results[i] = (img, info_skip)
+        else:
+            needs_idx.append(i)
+
+    if not needs_idx:
+        return [r for r in results if r is not None]  # type: ignore[misc]
+
+    # No Nomos weights → bilinear fallback per item
+    if mdl.dat2 is None:
+        for i in needs_idx:
+            H, W = imgs[i].shape[:2]
+            long_side = max(H, W)
+            target_long = cfg.upscale_target_long_side_px
+            scale = target_long / long_side
+            new_W, new_H = int(round(W * scale)), int(round(H * scale))
+            up = cv2.resize(imgs[i], (new_W, new_H), interpolation=cv2.INTER_LANCZOS4)
+            results[i] = (up, {
+                "input_long_side": long_side, "applied": True,
+                "factor": scale, "fallback": True,
+            })
+        return [r for r in results if r is not None]  # type: ignore[misc]
+
+    # Real batched Nomos run
+    sub_imgs = [imgs[i] for i in needs_idx]
+    max_h = max(im.shape[0] for im in sub_imgs)
+    max_w = max(im.shape[1] for im in sub_imgs)
+    batch = torch.zeros(
+        (len(sub_imgs), 3, max_h, max_w), dtype=torch.float32, device=mdl.device
+    )
+    for k, im in enumerate(sub_imgs):
+        h, w = im.shape[:2]
+        t = torch.from_numpy(im).permute(2, 0, 1).float() / 255.0
+        batch[k, :, :h, :w] = t.to(mdl.device)
+
+    with torch.inference_mode():
+        out = mdl.dat2(batch)  # (N, 3, max_h*4, max_w*4)
+
+    out = out.clamp(0, 1).cpu().float().numpy()
+    for k, idx in enumerate(needs_idx):
+        h, w = sub_imgs[k].shape[:2]
+        up = (out[k, :, : h * 4, : w * 4].transpose(1, 2, 0) * 255.0 + 0.5).astype(np.uint8)
+        new_long = max(up.shape[:2])
+        if new_long > cfg.upscale_target_long_side_px:
+            scale = cfg.upscale_target_long_side_px / new_long
+            up = cv2.resize(
+                up,
+                (int(round(up.shape[1] * scale)), int(round(up.shape[0] * scale))),
+                interpolation=cv2.INTER_LANCZOS4,
+            )
+        results[idx] = (up, {
+            "input_long_side": max(h, w), "applied": True, "factor": 4.0, "fallback": False,
+        })
+
+    return [r for r in results if r is not None]  # type: ignore[misc]
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Stage 4: background removal (BiRefNet) + refinement
 # ──────────────────────────────────────────────────────────────────────────
@@ -587,8 +667,99 @@ def process_one_resize(img_path: Path, output_dir: Path, mdl: Models, cfg: Confi
     return metrics
 
 
+def process_batch_resize(
+    items: list[tuple[Path, str]],
+    output_dir: Path,
+    mdl: Models,
+    cfg: Config,
+) -> list[dict]:
+    """Batched resize-only pipeline.
+
+    Steps for the whole batch:
+      1. Load + EXIF strip (CPU, per-item)
+      2. content_bbox + crop (CPU, per-item)
+      3. upscale_batch (one GPU call for the whole batch)
+      4. frame_to_square + WebP encode (CPU, per-item)
+
+    Returns list of metrics dicts in the same order as `items`.
+    """
+    if not items:
+        return []
+    batch_t0 = time.perf_counter()
+
+    # 1+2. Load and trim each image
+    loaded: list[dict] = []
+    for img_path, sha in items:
+        per_t0 = time.perf_counter()
+        img = load_image(img_path)
+        x1, y1, x2, y2 = content_bbox(img, alpha=None)
+        cropped = img[y1:y2, x1:x2]
+        loaded.append({
+            "path": img_path,
+            "sha": sha,
+            "input_size": [int(img.shape[1]), int(img.shape[0])],
+            "content_bbox": [x1, y1, x2, y2],
+            "cropped": cropped,
+            "load_trim_ms": (time.perf_counter() - per_t0) * 1000.0,
+        })
+
+    # 3. Batched Nomos upscale (one GPU call for the whole batch)
+    upscale_t0 = time.perf_counter()
+    cropped_list = [item["cropped"] for item in loaded]
+    upscaled_with_info = upscale_batch(cropped_list, mdl, cfg)
+    upscale_total_ms = (time.perf_counter() - upscale_t0) * 1000.0
+
+    # 4. Frame + save per item
+    results: list[dict] = []
+    for item, (upscaled, up_info) in zip(loaded, upscaled_with_info):
+        per_t0 = time.perf_counter()
+        final = frame_to_square(
+            upscaled, cfg.output_size, cfg.product_fill_ratio, cfg.padding_color
+        )
+        out_path = output_dir / f"{item['path'].stem}.webp"
+        save_image(final, out_path, fmt="WEBP", quality=cfg.webp_quality)
+        frame_ms = (time.perf_counter() - per_t0) * 1000.0
+
+        # Per-image metrics. upscale_share is upscale_total / batch_size — a fair
+        # attribution of the shared GPU call across the items in this batch.
+        upscale_share_ms = upscale_total_ms / max(1, len(loaded))
+        total_ms = item["load_trim_ms"] + upscale_share_ms + frame_ms
+
+        metrics = {
+            "name": item["path"].name,
+            "mode": "resize",
+            "input_size": item["input_size"],
+            "output_size": [int(final.shape[1]), int(final.shape[0])],
+            "content_bbox": item["content_bbox"],
+            "upscale": up_info,
+            "stage_times_ms": {
+                "load_trim": round(item["load_trim_ms"], 1),
+                "upscale_share_of_batch": round(upscale_share_ms, 1),
+                "frame": round(frame_ms, 1),
+                "total": round(total_ms, 1),
+            },
+            "batch_size": len(loaded),
+            "review_reason": None,
+            "input_hash": item["sha"],
+            "output_path": str(out_path.relative_to(output_dir.parent)),
+        }
+        # Per-image metrics on disk
+        debug_dir = output_dir / "debug" / item["path"].stem
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        (debug_dir / "metrics.json").write_text(
+            json.dumps(metrics, indent=2, ensure_ascii=False)
+        )
+        results.append(metrics)
+
+    logger.info(
+        f"batch n={len(loaded)} upscale_ms={upscale_total_ms:.0f} "
+        f"wall_ms={(time.perf_counter()-batch_t0)*1000:.0f}"
+    )
+    return results
+
+
 def process_one(img_path: Path, output_dir: Path, mdl: Models, cfg: Config) -> dict:
-    """Dispatch to the right pipeline based on cfg.mode."""
+    """Dispatch to the right pipeline based on cfg.mode. (Single-image path.)"""
     if cfg.mode == "resize":
         return process_one_resize(img_path, output_dir, mdl, cfg)
     return process_one_full(img_path, output_dir, mdl, cfg)
@@ -778,6 +949,9 @@ def main() -> int:
     p.add_argument("--mode", choices=["full", "resize"], default=None,
                    help="Pipeline mode (overrides config). 'full' = AI cleanup, "
                         "'resize' = bulk resize+SR only.")
+    p.add_argument("--batch-size", type=int, default=16,
+                   help="Photos per GPU batch in --mode resize (default 16). "
+                        "Set to 1 to disable batching. Ignored in --mode full.")
     args = p.parse_args()
 
     cfg = Config.load(args.config)
@@ -815,27 +989,76 @@ def main() -> int:
     if not todo:
         logger.info("Nothing to do — all inputs already processed (use --force to override)")
     else:
-        logger.info(f"To process: {len(todo)} / {len(inputs)} (cached: {len(cached_items)})")
+        logger.info(
+            f"To process: {len(todo)} / {len(inputs)} (cached: {len(cached_items)}) "
+            f"mode={cfg.mode} batch_size={args.batch_size}"
+        )
+        # MPS backend has poor scaling for batched conv operations — batching is
+        # actually slower than sequential. CUDA shows the expected 3-5x speedup.
+        if device.type == "mps" and args.batch_size > 1 and cfg.mode == "resize":
+            logger.warning(
+                "Mac MPS detected with --batch-size > 1. On Apple Silicon batching "
+                "is currently slower than sequential due to MPS backend limitations. "
+                "Consider --batch-size 1 on Mac. On RTX 4090 (CUDA), batch=16 is optimal."
+            )
         mdl = load_models(cfg, device)
-        for img_path, sha in tqdm(todo, desc="Processing"):
-            try:
-                m = process_one(img_path, args.output, mdl, cfg)
-                m["input_hash"] = sha
-                write_cache(args.output, sha, cfg.mode, m)
-                summary.append(m)
-                logger.info(
-                    f"✓ {img_path.name} → {m.get('content_type')}, "
-                    f"{m['stage_times_ms']['total']}ms, review={m.get('review_reason')}"
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.exception(f"✗ {img_path.name} failed: {e}")
-                summary.append({"name": img_path.name, "error": str(e)})
 
-        if device.type == "mps":
-            torch.mps.empty_cache()
-        elif device.type == "cuda":
-            torch.cuda.empty_cache()
-        gc.collect()
+        if cfg.mode == "resize" and args.batch_size > 1:
+            # Sort by image long-side to minimise zero-padding waste inside the
+            # batch — Nomos pads all items to the largest H/W in the batch and
+            # then crops back, so size-homogeneous batches run faster.
+            sized_todo = []
+            for img_path, sha in todo:
+                try:
+                    with Image.open(img_path) as im:
+                        long_side = max(im.size)
+                except Exception:  # noqa: BLE001
+                    long_side = 0
+                sized_todo.append((long_side, img_path, sha))
+            sized_todo.sort(key=lambda t: t[0])
+            sorted_todo = [(p, s) for (_, p, s) in sized_todo]
+
+            # Batched path — one GPU call per `batch_size` photos
+            for chunk_start in tqdm(
+                range(0, len(sorted_todo), args.batch_size), desc="Batches"
+            ):
+                chunk = sorted_todo[chunk_start: chunk_start + args.batch_size]
+                try:
+                    batch_results = process_batch_resize(chunk, args.output, mdl, cfg)
+                    for m in batch_results:
+                        write_cache(args.output, m["input_hash"], cfg.mode, m)
+                        summary.append(m)
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(f"✗ batch starting at {chunk[0][0].name} failed: {e}")
+                    for img_path, _ in chunk:
+                        summary.append({"name": img_path.name, "error": str(e)})
+
+                if device.type == "mps":
+                    torch.mps.empty_cache()
+                elif device.type == "cuda":
+                    torch.cuda.empty_cache()
+                gc.collect()
+        else:
+            # Single-image path — used for --mode full or --batch-size=1
+            for img_path, sha in tqdm(todo, desc="Processing"):
+                try:
+                    m = process_one(img_path, args.output, mdl, cfg)
+                    m["input_hash"] = sha
+                    write_cache(args.output, sha, cfg.mode, m)
+                    summary.append(m)
+                    logger.info(
+                        f"✓ {img_path.name} → {m.get('content_type')}, "
+                        f"{m['stage_times_ms']['total']}ms, review={m.get('review_reason')}"
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(f"✗ {img_path.name} failed: {e}")
+                    summary.append({"name": img_path.name, "error": str(e)})
+
+            if device.type == "mps":
+                torch.mps.empty_cache()
+            elif device.type == "cuda":
+                torch.cuda.empty_cache()
+            gc.collect()
 
     # Aggregate
     ok = [s for s in summary if "error" not in s]

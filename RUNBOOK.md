@@ -49,6 +49,12 @@ python prototype.py --input <folder> --output output/ --mode resize --limit 50
 
 # Use a specific device
 python prototype.py --input <folder> --output output/ --mode resize --device cpu
+
+# Batched Nomos for the bulk path (CUDA only — on Mac MPS use --batch-size 1).
+# On RTX 4090 batch=16 gives ~3-5x speedup; on Mac MPS batching is SLOWER
+# (PyTorch MPS backend doesn't optimize batched conv).
+python prototype.py --input <folder> --output out/ --mode resize \
+    --device cuda --batch-size 16
 ```
 
 Outputs land at `<output>/<name>.webp`. Per-image debug + metrics are at
