@@ -5,6 +5,20 @@
 
 > Прочитай `docs/virtus-onboarding.md` и сделай Setup (Шаг 1). Дай отчёт.
 
+## Какие ML модели используются (TL;DR)
+
+Полностью — в `docs/models.md`. Кратко:
+
+| Что | Модель | Где зафиксирована |
+|---|---|---|
+| **Апскейл качества фото** | **Nomos PLKSR x4** (`Phips/4xNomosWebPhoto_RealPLKSR`) | `prototype.py`, `config.yaml.example`, скачивается в Setup ниже |
+| Детектор вотермарков (для `--mode full`) | Florence-2-base | автоскачка из HF |
+| Инпейнт (для `--mode full`) | Big-LaMa | `simple-lama-inpainting` |
+| Удаление фона (для `--mode full`) | BiRefNet-matting | автоскачка из HF |
+
+**Не меняй модели** — выбор делал vda после полного теста. Подробности
+сравнений — в `docs/models.md`.
+
 Дальше Claude Code сам всё развернёт. Ниже — что он будет делать и какие
 команды ты будешь давать ему потом.
 
