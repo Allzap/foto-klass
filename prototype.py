@@ -63,6 +63,12 @@ class Config:
     product_fill_ratio: float = 0.85
     padding_color: tuple[int, int, int] = (255, 255, 255)
 
+    # Content-bbox trim threshold. Pixels with grayscale value >= this are
+    # treated as background and trimmed. Default 230 (was 245) so that slightly
+    # grey/dirty supplier backgrounds also get cropped properly — verified on
+    # archive 6378.7z which had ~5% photos with non-pure-white backgrounds.
+    trim_white_threshold: int = 230
+
     # Drawing classifier (heuristic).
     # Real drawings in sample/ have near_white > 0.95; photos with watermark
     # patterns can reach ~0.5. Keep threshold high to avoid false-positives.
@@ -565,7 +571,7 @@ def composite_on_white(rgb: np.ndarray, alpha: np.ndarray, bg=(255, 255, 255)) -
 # ──────────────────────────────────────────────────────────────────────────
 
 def content_bbox(img: np.ndarray, alpha: Optional[np.ndarray] = None,
-                 white_threshold: int = 245) -> tuple[int, int, int, int]:
+                 white_threshold: int = 230) -> tuple[int, int, int, int]:
     """Bbox (x1, y1, x2, y2) of non-background content."""
     if alpha is not None:
         mask = alpha > 0.05
@@ -644,7 +650,7 @@ def process_one_resize(img_path: Path, output_dir: Path, mdl: Models, cfg: Confi
     metrics["stage_times_ms"]["load"] = round(t, 1)
     metrics["input_size"] = [int(img.shape[1]), int(img.shape[0])]
 
-    x1, y1, x2, y2 = content_bbox(img, alpha=None)
+    x1, y1, x2, y2 = content_bbox(img, alpha=None, white_threshold=cfg.trim_white_threshold)
     cropped = img[y1:y2, x1:x2]
     metrics["content_bbox"] = [x1, y1, x2, y2]
 
@@ -692,7 +698,7 @@ def process_batch_resize(
     for img_path, sha in items:
         per_t0 = time.perf_counter()
         img = load_image(img_path)
-        x1, y1, x2, y2 = content_bbox(img, alpha=None)
+        x1, y1, x2, y2 = content_bbox(img, alpha=None, white_threshold=cfg.trim_white_threshold)
         cropped = img[y1:y2, x1:x2]
         loaded.append({
             "path": img_path,
