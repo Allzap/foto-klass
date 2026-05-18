@@ -1,0 +1,28 @@
+# foto-klass orchestrator (API) — lightweight Python container.
+# No torch / transformers / models here — those live in the RunPod GPU image.
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# System deps for psycopg + healthchecks
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-api.txt /app/
+RUN pip install -r requirements-api.txt
+
+COPY api/ /app/api/
+COPY migrations/ /app/migrations/
+
+EXPOSE 8000
+
+# Default command: run migrations then start uvicorn
+CMD bash -c "alembic -c migrations/alembic.ini upgrade head && \
+             uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 2"

@@ -1,0 +1,59 @@
+# docker-compose for the foto-klass orchestrator stack (VPS side only).
+# Models are NOT here — they run on RunPod pods (see Dockerfile.gpu, Stage 4).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fk-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fotoklass}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-fotoklass}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fotoklass}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Bind only to localhost; API talks to it over the container network
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: fk-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      API_KEY: ${API_KEY}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-fotoklass}
+      POSTGRES_USER: ${POSTGRES_USER:-fotoklass}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      RUNPOD_API_KEY: ${RUNPOD_API_KEY}
+      RUNPOD_RTX4090_PER_HOUR: ${RUNPOD_RTX4090_PER_HOUR:-0.34}
+      HETZNER_S3_ENDPOINT: ${HETZNER_S3_ENDPOINT:-}
+      HETZNER_S3_ACCESS_KEY: ${HETZNER_S3_ACCESS_KEY:-}
+      HETZNER_S3_SECRET_KEY: ${HETZNER_S3_SECRET_KEY:-}
+      HETZNER_S3_REGION: ${HETZNER_S3_REGION:-}
+      HETZNER_S3_BUCKET: ${HETZNER_S3_BUCKET:-}
+      HETZNER_OBJECT_STORAGE_PER_GB: ${HETZNER_OBJECT_STORAGE_PER_GB:-0.01}
+      HETZNER_EGRESS_PER_TB: ${HETZNER_EGRESS_PER_TB:-1.00}
+      VPS_PER_MONTH: ${VPS_PER_MONTH:-10}
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  pgdata:

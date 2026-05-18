@@ -1,0 +1,22 @@
+# Server-side orchestrator deps. Lightweight — no torch/transformers here.
+# (Heavy ML deps live in requirements.txt for the RunPod pod image.)
+
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+
+# DB
+sqlalchemy>=2.0.30
+alembic>=1.13.0
+psycopg[binary]>=3.1.18
+
+# S3 client (boto3 talks to Hetzner Object Storage)
+boto3>=1.34.0
+
+# HTTP client for RunPod API + healthchecks
+httpx>=0.27.0
+
+# Utils
+python-dotenv>=1.0.0
+loguru>=0.7.2
