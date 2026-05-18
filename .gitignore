@@ -30,5 +30,9 @@ Thumbs.db
 .vscode/
 *.swp
 
-# Claude Code internal state (not part of project)
-.claude/
+# Claude Code — keep settings.json (project model + permissions),
+# ignore local state, locks, transcripts, etc.
+.claude/*
+!.claude/settings.json
+!.claude/agents/
+!.claude/skills/
