@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.eggs/
+*.egg-info/
+
+# Output / debug artifacts
+output/
+output_*/
+weights/
+*.pth
+*.safetensors
+
+# Local config (keep .example only)
+config.yaml
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Claude Code internal state (not part of project)
+.claude/

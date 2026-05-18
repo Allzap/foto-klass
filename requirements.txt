@@ -1,0 +1,31 @@
+# Stage 1 prototype — pinned for reproducibility (Mac MPS + CUDA both).
+# Tested with Python 3.11.
+
+# Core ML
+torch>=2.3.0,<2.6
+torchvision>=0.18.0,<0.21
+transformers>=4.44.0,<4.50
+accelerate>=0.33.0
+timm>=1.0.9
+einops>=0.8.0
+safetensors>=0.4.3
+huggingface_hub>=0.24.0
+kornia>=0.7.3       # required by BiRefNet's modeling code
+
+# Image processing
+# Pillow capped <10 because simple-lama-inpainting 0.1.2 requires it.
+# transformers and torchvision both work with 9.5.x.
+pillow>=9.5.0,<10.0.0
+numpy>=1.26.0,<2.2
+opencv-python-headless>=4.10.0
+pymatting>=1.1.12
+
+# Pipeline-specific
+spandrel>=0.3.4              # DAT2 upscaler loader
+simple-lama-inpainting>=0.1.2  # LaMa inpainter
+
+# Utilities
+pydantic>=2.7.0
+pyyaml>=6.0.1
+loguru>=0.7.2
+tqdm>=4.66.0

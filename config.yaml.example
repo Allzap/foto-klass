@@ -1,0 +1,70 @@
+# Stage 1 prototype config. Copy to config.yaml and tweak as needed.
+
+# ─── Output ───
+output_size: 1000          # final WxH square canvas
+webp_quality: 90
+product_fill_ratio: 0.85   # product occupies ~85% of canvas by longer side
+
+# ─── Drawing-vs-photo classifier (heuristic, CPU) ───
+# Image is "drawing" if all three hold:
+#   near-white pixel ratio >= drawing_near_white_ratio
+#   mean HSV saturation   <= drawing_max_saturation
+#   Canny edge density    >= drawing_min_edge_density (excludes blank canvases)
+# Real drawings in sample/ have near_white > 0.95; photos with watermark
+# patterns can reach ~0.5. Keep threshold high to avoid false-positives.
+drawing_near_white_ratio: 0.85
+drawing_max_saturation: 10.0
+drawing_min_edge_density: 0.005
+
+# ─── Watermark detection (Florence-2) ───
+# Prompts grounded by Florence-2 CAPTION_TO_PHRASE_GROUNDING.
+watermark_prompts:
+  - "watermark text"
+  - "logo overlay covering product"
+  - "phone number"
+  - "website url"
+  - "repeating brand stamp pattern"
+
+# Drop watermark bbox as FALSE-POSITIVE if Florence-2 OCR inside it matches any
+# of these (they look like legitimate article numbers / specs).
+article_keep_patterns:
+  - '^[A-Z0-9\-]{4,}$'      # 308014, AL-KO
+  - '^\d+$'                 # standalone numerics like '307975'
+  - 'Ø\s*\d+'               # diameter callouts
+  - '\d+\s*mm$'             # 47 mm
+
+# KEEP watermark bbox if text matches these (genuine watermark / contact info).
+watermark_text_patterns:
+  - '\+?\d[\d\s\-\(\)]{6,}'                    # phone numbers
+  - 'https?://|www\.'                          # urls
+  - '\.(com|ru|ua|net|org|by|kz)'              # tld
+  - '@'                                        # emails
+
+# Confidence / routing
+watermark_iou_review_threshold: 0.25   # WM_mask vs product_mask IoU → review
+watermark_coverage_review_pct: 0.15    # WM covers >15% of product bbox → review
+
+# ─── Upscale ───
+upscale_skip_long_side_px: 900   # if long side >= this, skip upscale entirely
+upscale_target_long_side_px: 1500  # upscale until long side >= this
+
+# ─── Background removal ───
+bg_removal_input_size: 1024  # BiRefNet inference resolution
+
+# ─── Padding ───
+padding_color: [255, 255, 255]  # RGB white
+
+# ─── Model identifiers ───
+# Use Florence-2-base on Mac MPS for speed (~1-2s/inference vs 3-5s for large).
+# Switch to "microsoft/Florence-2-large" on RTX 4090.
+florence_model: "microsoft/Florence-2-base"
+
+# BiRefNet-matting (1024×1024) is the lighter default for Mac MPS.
+# Switch to "ZhengPeng7/BiRefNet_HR-matting" (2048×2048) on RTX 4090 for max quality.
+birefnet_model: "ZhengPeng7/BiRefNet-matting"
+
+# Upscaler weights. Default = Nomos PLKSR x4 (chosen after comparison vs DAT2,
+# Real-ESRGAN, HAT-L, and iloveimg.com — best quality/speed/license trade-off).
+# Download: huggingface-cli download Phips/4xNomosWebPhoto_RealPLKSR \
+#     4xNomosWebPhoto_RealPLKSR.safetensors --local-dir weights
+upscaler_weights_path: "weights/4xNomosWebPhoto_RealPLKSR.safetensors"
