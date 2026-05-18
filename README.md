@@ -1,11 +1,54 @@
-# foto-klass — Stage 1 prototype
+# foto-klass
 
-Single-file Python pipeline that converts auto-parts source photos into Google
-Merchant-ready `1000×1000 WebP q90` outputs on pure white background, with
-visual debug artifacts at every stage.
+Automated pipeline that converts auto-parts photos into Google Merchant-ready
+**1000×1000 WebP q90** on pure white background.
 
-This is a **prototype only**. No infrastructure, no S3, no queues. Pure
-local-folder-in → local-folder-out.
+**Where to start (humans):** read `RUNBOOK.md` for daily commands and
+`PROJECT_BRIEF.md` for the why.
+
+**Where to start (AI coding agents):** read `CLAUDE.md` first — it has the
+locked-in tech choices, conventions, and what *not* to touch.
+
+## Repo layout
+
+```
+prototype.py           ← main pipeline (Stage 1). Two modes: --mode full | resize
+requirements.txt       ← deps for running the pipeline locally / on RunPod
+config.yaml.example    ← tunable thresholds; copy to config.yaml
+sample/                ← 7 reference photos to test on
+
+api/                   ← FastAPI orchestrator (Stage 2 — SCAFFOLD ONLY, not deployed)
+migrations/            ← Alembic baseline for the orchestrator DB (Stage 2)
+docker-compose.yml     ← VPS stack (Stage 2 — not active)
+Dockerfile.api         ← lightweight API container (Stage 2)
+requirements-api.txt   ← server-side deps (no torch)
+
+scripts/               ← one-off experiments (SR model comparison, etc.)
+
+CLAUDE.md              ← agent instructions
+PROJECT_BRIEF.md       ← original spec from the owner
+RUNBOOK.md             ← operator workflows
+README.md              ← you are here
+```
+
+## TL;DR for new collaborators
+
+```bash
+git clone git@github.com:Allzap/foto-klass.git
+cd foto-klass
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+mkdir -p weights
+huggingface-cli download Phips/4xNomosWebPhoto_RealPLKSR \
+    4xNomosWebPhoto_RealPLKSR.safetensors --local-dir weights
+
+python prototype.py --input sample/ --output output/ --mode resize
+```
+
+That's it. The rest is in `RUNBOOK.md`.
+
+---
 
 ---
 
