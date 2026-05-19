@@ -116,25 +116,41 @@ Whole job:
 - Upload thread count 20 → 40 если Hetzner S3 не ограничивает
 - Pod cloud type (Community vs Secure) — Community в 2× дешевле, но реже доступен
 
-## 8. Структура выходов в S3
+## 8. Хранилища и схема URL
+
+Архитектура **двух bucket'ов** (зафиксирована 2026-05-19):
+
+| Bucket | Где | Что в нём | Доступ |
+|---|---|---|---|
+| `allzap-tecdoc-photos` | Hetzner Object Storage (Falkenstein) | 1229 архивов `articles-archives/<N>.7z` (470 GB исходники) + бренд-ассеты | приватный, через API |
+| **`allzap-photos`** | **Cloudflare R2** | Распакованные исходники + результаты prod-прогона | публично через CDN |
+
+**Custom domain для R2:** `https://photo.allzap.site` (CDN-раздача, free egress, Cloudflare кэш).
+
+### URL-схема выходов
 
 ```
-allzap-tecdoc-photos/
-├── articles-archives/        ← вход (1229 архивов 7z)
-│   ├── 1.7z
-│   ├── 2.7z
-│   └── ...
-└── up_v2/                    ← выход алгоритма Димы
-    └── articles-archives/
-        ├── 1/                ← один pod обработал один архив
-        │   ├── 002ab468....webp   (1000×1000 WebP q90)
-        │   ├── 00f7094f....webp
-        │   └── ...
-        ├── 2/
-        └── ...
+https://photo.allzap.site/<hash>/unpacked/<archive_id>/<filename>
+
+где hash = filename[:2].lower() (первые 2 символа SHA1-имени файла).
 ```
 
-Имя файла = исходный SHA1 хэш (из `articles-archives/N.7z`). Это сохраняет ссылочную целостность для downstream consumer (Google Merchant feed).
+**Пример:**
+```
+https://photo.allzap.site/00/unpacked/6378/002ab468d8d5c29236f788294e278bd373d5a6ce.webp
+```
+
+Полная документация для программиста: [docs/photo-urls.md](photo-urls.md).
+
+### Почему 256-шардовый prefix
+
+Cloudflare R2 (Ceph backend) шардит по prefix. Без разбиения весь `unpacked/`
+hits на одну shard → bottleneck при массовых PUT. Hash-prefix `00`-`ff`
+распределяет нагрузку по 256 шардам — даёт ×2 throughput на write и идеальный
+load balance на read.
+
+Имена файлов уже SHA1 → первые 2 символа равномерно покрывают все 256
+вариантов. Без дополнительных хэшей.
 
 ## 9. История изменений алгоритма
 
