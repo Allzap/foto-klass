@@ -36,3 +36,4 @@ Thumbs.db
 !.claude/settings.json
 !.claude/agents/
 !.claude/skills/
+vps-pool.yaml
