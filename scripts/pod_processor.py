@@ -28,6 +28,24 @@ import json
 import os
 import shutil
 import subprocess
+
+# Load env from /etc/rp_environment (RunPod populates this) or /workspace/pod_env.sh.
+# RunPod processes inherit env vars only from PID 1, not via SSH shell.
+def _load_env_from_files():
+    for env_file in ("/etc/rp_environment", "/workspace/pod_env.sh"):
+        try:
+            for line in open(env_file):
+                line = line.strip()
+                # both formats: "KEY=VALUE" and "export KEY=VALUE"
+                if line.startswith("export "):
+                    line = line[7:]
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        except (FileNotFoundError, PermissionError):
+            pass
+
+_load_env_from_files()
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
