@@ -215,6 +215,9 @@ def process_batch(s3, bucket: str, items: list[tuple[str, str, str]],
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--chunk-id", type=int, required=True)
+    ap.add_argument("--start", type=int, default=0,
+                    help="slice items[start:end] of chunk list (for parallel speedup)")
+    ap.add_argument("--end", type=int, default=None)
     ap.add_argument("--batch-size", type=int, default=5000,
                     help="files per prototype.py invocation")
     ap.add_argument("--threads", type=int, default=32)
@@ -228,7 +231,10 @@ def main():
     POD_TMP.mkdir(parents=True, exist_ok=True)
     print(f"[chunk-{args.chunk_id}] fetching chunk list...", flush=True)
     items = fetch_chunk(s3, bucket, args.chunk_id)
-    print(f"[chunk-{args.chunk_id}] {len(items)} items to process", flush=True)
+    print(f"[chunk-{args.chunk_id}] fetched {len(items)} total items", flush=True)
+    if args.end is not None or args.start > 0:
+        items = items[args.start:args.end]
+        print(f"[chunk-{args.chunk_id}] sliced to items[{args.start}:{args.end}] = {len(items)}", flush=True)
 
     if args.resume_from > 0:
         items = items[args.resume_from:]
