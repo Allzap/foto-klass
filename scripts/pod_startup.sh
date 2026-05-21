@@ -24,7 +24,10 @@ mark "stage1_git_clone"
 [ -d foto-klass ] || git clone --depth 1 -b main https://github.com/Allzap/foto-klass
 cd foto-klass
 
-mark "stage2_pip_install"
+mark "stage2_apt_install"
+apt-get update -qq && apt-get install -y -qq libgl1 libglib2.0-0 git curl > /dev/null 2>&1
+
+mark "stage3_pip_install"
 pip install -q boto3 2>&1 | tail -1
 pip install -q -r requirements.txt huggingface_hub 2>&1 | tail -3
 
@@ -34,8 +37,12 @@ huggingface-cli download Phips/4xNomosWebPhoto_RealPLKSR \
     4xNomosWebPhoto_RealPLKSR.safetensors --local-dir weights 2>&1 | tail -1
 
 mark "stage4_running_processor"
-echo "STARTUP DONE — running pod_processor for chunk ${CHUNK_ID}"
-python scripts/pod_processor.py --chunk-id "${CHUNK_ID}" 2>&1 | tee /workspace/pod-${CHUNK_ID}.log
+SLICE_ARGS=""
+[ -n "${CHUNK_START}" ] && SLICE_ARGS="$SLICE_ARGS --start ${CHUNK_START}"
+[ -n "${CHUNK_END}" ]   && SLICE_ARGS="$SLICE_ARGS --end ${CHUNK_END}"
+LOG_TAG="${CHUNK_ID}${CHUNK_START:+_s${CHUNK_START}}${CHUNK_END:+_e${CHUNK_END}}"
+echo "STARTUP DONE — running pod_processor for chunk ${CHUNK_ID} ${SLICE_ARGS}"
+python scripts/pod_processor.py --chunk-id "${CHUNK_ID}" ${SLICE_ARGS} 2>&1 | tee /workspace/pod-${LOG_TAG}.log
 
 mark "stage5_done"
 echo "POD DONE — terminating self"

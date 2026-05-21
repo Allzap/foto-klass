@@ -85,8 +85,10 @@ def chunk_key(chunk_id: int) -> str:
     return f"dispatch/chunk-{chunk_id:03d}.txt"
 
 
-def progress_key(chunk_id: int) -> str:
-    return f"dispatch/progress-{chunk_id:03d}.json"
+def progress_key(chunk_id: int, start: int = 0, end: int | None = None) -> str:
+    if start == 0 and end is None:
+        return f"dispatch/progress-{chunk_id:03d}.json"
+    return f"dispatch/progress-{chunk_id:03d}_s{start}_e{end if end is not None else 'all'}.json"
 
 
 def list_to_r2_keys(paths: list[str]) -> list[tuple[str, str, str]]:
@@ -130,9 +132,10 @@ def upload_one(s3, bucket: str, local_path: Path, key: str) -> bool:
         return False
 
 
-def report_progress(s3, bucket: str, chunk_id: int, payload: dict):
+def report_progress(s3, bucket: str, chunk_id: int, payload: dict,
+                    start: int = 0, end: int | None = None):
     body = json.dumps(payload, indent=2).encode("utf-8")
-    s3.put_object(Bucket=bucket, Key=progress_key(chunk_id), Body=body,
+    s3.put_object(Bucket=bucket, Key=progress_key(chunk_id, start, end), Body=body,
                   ContentType="application/json")
 
 
@@ -279,7 +282,7 @@ def main():
                 "up_s": round(res["t_up"], 1),
             },
         }
-        report_progress(s3, bucket, args.chunk_id, progress)
+        report_progress(s3, bucket, args.chunk_id, progress, args.start, args.end)
         print(f"[chunk-{args.chunk_id}] {json.dumps(progress)}", flush=True)
 
     # final summary
@@ -292,7 +295,7 @@ def main():
         "up_fail": total_up_fail,
         "elapsed_s": round(time.time() - t0),
     }
-    report_progress(s3, bucket, args.chunk_id, final)
+    report_progress(s3, bucket, args.chunk_id, final, args.start, args.end)
     print(f"[chunk-{args.chunk_id}] DONE: {json.dumps(final)}", flush=True)
 
 
