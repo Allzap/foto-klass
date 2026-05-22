@@ -151,12 +151,99 @@ def run_prototype(in_dir: Path, out_dir: Path, batch_size: int = 16):
     subprocess.check_call(cmd, cwd=str(REPO))
 
 
+def head_exists(s3, bucket: str, key: str) -> bool:
+    """Return True if R2 object at key already exists."""
+    try:
+        s3.head_object(Bucket=bucket, Key=key)
+        return True
+    except Exception:
+        return False
+
+
+def filter_existing(s3, bucket: str, items: list[tuple[str, str, str]],
+                    threads: int) -> tuple[list[tuple[str, str, str]], int]:
+    """Filter out items whose target R2 processed key already exists.
+    Returns (new_items, skipped_count). HEAD is cheap relative to download+process."""
+    def check(item):
+        _, archive_id, filename = item
+        shard = filename[:2].lower()
+        out_key = f"{shard}/processed/{archive_id}/{filename}"
+        return item, head_exists(s3, bucket, out_key)
+    keep: list[tuple[str, str, str]] = []
+    skipped = 0
+    with ThreadPoolExecutor(max_workers=threads) as ex:
+        for item, exists in ex.map(check, items):
+            if exists:
+                skipped += 1
+            else:
+                keep.append(item)
+    return keep, skipped
+
+
+def run_prototype_safe(in_dir: Path, out_dir: Path) -> bool:
+    """Run prototype.py; on crash split inputs in half and retry each, isolating
+    bad files. Returns True if at least some output produced. Files that can't
+    be processed are moved aside so subsequent halves can run."""
+    inputs = sorted(in_dir.iterdir())
+    if not inputs:
+        return True
+    try:
+        run_prototype(in_dir, out_dir, batch_size=16)
+        return True
+    except subprocess.CalledProcessError:
+        if len(inputs) == 1:
+            # single file is bad — quarantine and give up on it
+            bad = inputs[0]
+            print(f"[pod_processor] BAD FILE quarantined: {bad.name}", flush=True)
+            try:
+                bad.unlink()
+            except Exception:
+                pass
+            return False
+        # split into halves, retry each in own temp dirs
+        mid = len(inputs) // 2
+        success = False
+        for half_idx, half in enumerate((inputs[:mid], inputs[mid:])):
+            half_in = in_dir.parent / f"in_half_{half_idx}"
+            half_out = in_dir.parent / f"out_half_{half_idx}"
+            if half_in.exists(): shutil.rmtree(half_in)
+            if half_out.exists(): shutil.rmtree(half_out)
+            half_in.mkdir(); half_out.mkdir()
+            for f in half:
+                try:
+                    f.rename(half_in / f.name)
+                except Exception:
+                    pass
+            try:
+                if run_prototype_safe(half_in, half_out):
+                    # move outputs back
+                    for f in half_out.iterdir():
+                        try: f.rename(out_dir / f.name)
+                        except Exception: pass
+                    success = True
+            finally:
+                shutil.rmtree(half_in, ignore_errors=True)
+                shutil.rmtree(half_out, ignore_errors=True)
+        return success
+
+
 def process_batch(s3, bucket: str, items: list[tuple[str, str, str]],
-                  threads: int) -> dict:
-    """Process one batch end-to-end: download → prototype → upload."""
+                  threads: int, skip_existing: bool = True) -> dict:
+    """Process one batch end-to-end: download → prototype → upload.
+    If skip_existing=True, HEAD-checks R2 first to skip already-processed files."""
     if IN_DIR.exists(): shutil.rmtree(IN_DIR)
     if OUT_DIR.exists(): shutil.rmtree(OUT_DIR)
     IN_DIR.mkdir(parents=True); OUT_DIR.mkdir(parents=True)
+
+    t_skip0 = time.time()
+    skipped_existing = 0
+    if skip_existing:
+        items, skipped_existing = filter_existing(s3, bucket, items, threads)
+    t_skip = time.time() - t_skip0
+
+    if not items:
+        return {"ok": 0, "dl_fail": 0, "up_fail": 0, "skipped": skipped_existing,
+                "t_skip": t_skip, "t_dl": 0, "t_proc": 0, "t_up": 0}
 
     t0 = time.time()
 
@@ -178,11 +265,12 @@ def process_batch(s3, bucket: str, items: list[tuple[str, str, str]],
     t_dl = time.time() - t0
 
     if dl_ok == 0:
-        return {"ok": 0, "dl_fail": dl_fail, "up_fail": 0, "t_dl": t_dl, "t_proc": 0, "t_up": 0}
+        return {"ok": 0, "dl_fail": dl_fail, "up_fail": 0, "skipped": skipped_existing,
+                "t_skip": t_skip, "t_dl": t_dl, "t_proc": 0, "t_up": 0}
 
-    # process via prototype.py (Algorithm Dima)
+    # process via prototype.py (Algorithm Dima) with bad-file isolation
     t1 = time.time()
-    run_prototype(IN_DIR, OUT_DIR, batch_size=16)
+    run_prototype_safe(IN_DIR, OUT_DIR)
     t_proc = time.time() - t1
 
     # upload results in parallel
@@ -211,7 +299,8 @@ def process_batch(s3, bucket: str, items: list[tuple[str, str, str]],
 
     return {
         "ok": up_ok, "dl_fail": dl_fail, "up_fail": up_fail,
-        "t_dl": t_dl, "t_proc": t_proc, "t_up": t_up,
+        "skipped": skipped_existing,
+        "t_skip": t_skip, "t_dl": t_dl, "t_proc": t_proc, "t_up": t_up,
     }
 
 
